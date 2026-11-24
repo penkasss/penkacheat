@@ -1,0 +1,19 @@
+workflows:
+  ios-tweak:
+    name: Build Tweak
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install Theos
+        script: |
+          brew install ldid
+          git clone --recursive https://github.com/theos/theos.git $HOME/theos
+          echo "THEOS=$HOME/theos" >> $CM_ENV
+      - name: Build Tweak
+        script: |
+          export PATH=$THEOS/bin:$PATH
+          make package
+    artifacts:
+      - .theos/_/DEBIAN/../*.deb
