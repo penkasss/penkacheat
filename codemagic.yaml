@@ -14,6 +14,6 @@ workflows:
       - name: Build Tweak
         script: |
           export PATH=$THEOS/bin:$PATH
-          make package
+          make
     artifacts:
-      - .theos/_/DEBIAN/../*.deb
+      - .theos/obj/debug/*.dylib
