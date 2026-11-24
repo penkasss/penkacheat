@@ -2,7 +2,6 @@
 #import <Foundation/Foundation.h>
 
 namespace Off {
-    // Цепочка оффсетов, которую мы нашли
     constexpr uintptr_t kFPSCamera_PlayerController = 0x130;
     constexpr uintptr_t kPlayer_NetworkController  = 0x110;
     constexpr uintptr_t kNetwork_PlayerList        = 0x78;
@@ -17,6 +16,8 @@ struct Vec3 { float x, y, z; };
 struct Vec2 { float x, y; };
 
 static uintptr_t g_base = 0;
+static bool g_esp_enabled = false; // По умолчанию выключено
+static bool g_menu_visible = false;
 
 static uintptr_t module_base(const char* name) {
     FILE* fp = fopen("/proc/self/maps", "r"); if (!fp) return 0;
@@ -33,43 +34,91 @@ template<typename T> static T rd(uintptr_t a, T fb = T{}) {
 
 @interface ESPOverlayView : UIView
 @property (nonatomic, strong) CADisplayLink* link;
+@property (nonatomic, strong) UIView* menuView;
 @end
 
 @implementation ESPOverlayView
+
 - (instancetype)initWithFrame:(CGRect)f {
     self = [super initWithFrame:f];
     self.backgroundColor = [UIColor clearColor];
-    self.userInteractionEnabled = NO;
+    self.userInteractionEnabled = YES; // Включаем, чтобы ловить тапы
+    
     self.link = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick)];
     [self.link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    
+    // Настройка распознавателя жестов (3 пальца, 3 тапа)
+    UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTripleTap:)];
+    tapGesture.numberOfTouchesRequired = 3;
+    tapGesture.numberOfTapsRequired = 3;
+    tapGesture.cancelsTouchesInView = NO; // Пропускаем тапы в игру
+    [self addGestureRecognizer:tapGesture];
+
+    // Создаем меню (изначально скрыто)
+    [self setupMenu];
+    
     return self;
 }
+
+- (void)setupMenu {
+    self.menuView = [[UIView alloc] initWithFrame:CGRectMake(50, 200, 250, 150)];
+    self.menuView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.8];
+    self.menuView.layer.cornerRadius = 10;
+    self.menuView.hidden = YES;
+    
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(0, 10, 250, 30)];
+    title.text = @"GORILLA MENU";
+    title.textColor = [UIColor greenColor];
+    title.textAlignment = NSTextAlignmentCenter;
+    title.font = [UIFont boldSystemFontOfSize:18];
+    [self.menuView addSubview:title];
+    
+    UIButton *espBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    espBtn.frame = CGRectMake(25, 60, 200, 40);
+    [espBtn setTitle:@"Включить ESP" forState:UIControlStateNormal];
+    [espBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    espBtn.backgroundColor = [UIColor darkGrayColor];
+    espBtn.layer.cornerRadius = 5;
+    [espBtn addTarget:self action:@selector(toggleESP:) forControlEvents:UIControlEventTouchUpInside];
+    [self.menuView addSubview:espBtn];
+    
+    [self addSubview:self.menuView];
+}
+
+- (void)handleTripleTap:(UITapGestureRecognizer *)gesture {
+    g_menu_visible = !g_menu_visible;
+    self.menuView.hidden = !g_menu_visible;
+}
+
+- (void)toggleESP:(UIButton *)sender {
+    g_esp_enabled = !g_esp_enabled;
+    [sender setTitle:g_esp_enabled ? @"Выключить ESP" : @"Включить ESP" forState:UIControlStateNormal];
+    sender.backgroundColor = g_esp_enabled ? [UIColor greenColor] : [UIColor darkGrayColor];
+}
+
 - (void)tick { [self setNeedsDisplay]; }
+
 - (void)drawRect:(CGRect)rect {
+    if (!g_esp_enabled) return; // Если выключено, ничего не рисуем
+
     if (!g_base) {
         g_base = module_base("UnityFramework");
         if (!g_base) return;
     }
     
-    // Вызов метода betm() из дампа (RVA: 0x27629BC) для получения камеры
     uintptr_t betm_func = g_base + 0x27629BC; 
     typedef void* (*GetCameraFunc)(void);
     GetCameraFunc get_camera = (GetCameraFunc)betm_func;
     uintptr_t cam = (uintptr_t)get_camera();
 
     if (!cam) return;
-
-    // Идем по цепочке оффсетов
     uintptr_t localPlayer = rd<uintptr_t>(cam + Off::kFPSCamera_PlayerController);
     if (!localPlayer) return;
-
     uintptr_t netCtrl = rd<uintptr_t>(localPlayer + Off::kPlayer_NetworkController);
     if (!netCtrl) return;
-
     uintptr_t list = rd<uintptr_t>(netCtrl + Off::kNetwork_PlayerList);
     if (!list) return;
     
-    // В C# массивах длина лежит по смещению 0x18
     int count = rd<int>(list + 0x18);
     if (count <= 0 || count > 64) return;
 
@@ -77,20 +126,16 @@ template<typename T> static T rd(uintptr_t a, T fb = T{}) {
     CGContextSetLineWidth(ctx, 2.0);
 
     for (int i = 0; i < count; i++) {
-        // Элементы массива начинаются с 0x20
         uintptr_t snap = rd<uintptr_t>(list + 0x20 + i * 8);
         if (!snap) continue;
-
         uintptr_t move = rd<uintptr_t>(snap + Off::kPlayerSnapshot_Move);
         if (!move) continue;
 
         Vec3 pos = rd<Vec3>(move + Off::kMovement_Position);
         
-        // Проверка, что координаты не нулевые
         if (pos.x != 0 || pos.y != 0) {
             CGContextSetStrokeColorWithColor(ctx, [UIColor redColor].CGColor);
-            // Временно рисуем квадрат в центре экрана, чтобы проверить, 
-            // что код доходит до чтения координат.
+            // Рисуем квадрат в центре для теста
             CGContextStrokeRect(ctx, CGRectMake(Off::kScreenW/2 - 25, Off::kScreenH/2 - 25, 50, 50));
         }
     }
